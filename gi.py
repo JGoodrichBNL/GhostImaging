@@ -435,6 +435,31 @@ class Experiment:
 
         return ghost
     
+    # ngi method: applies the NGI to reconstruct the data
+    # roi: optional bool, if True it looks for good/bad in the ROI, otherwise over the entire frame   
+    # bad: optional bool, if True returns only does NGI over good frames, otherwise all frames    
+    def ngi(self, roi = True, bad = True):      
+        idler = self.get_idler(roi = roi, bad = bad)
+        binsize = idler.shape[0] # should be equal to gframes
+
+        ghost = np.zeros([idler.shape[1], idler.shape[2]])
+        bsums, isums, ratio = self.frame_sums(roi, bad, plot = False, ratio = False)
+        bsums = bsums
+        isums = isums/self.roiarea()
+        bsumav = np.mean(bsums)
+        isumav = np.mean(isums)
+
+        for i in range(ghost.shape[0]):
+            for j in range(ghost.shape[1]):
+                sum = 0
+
+                for bin in range(binsize):
+                    sum += (bsums[bin]/isums[bin] - bsumav/isumav)*idler[bin][i][j]
+
+                ghost[i,j]=sum/binsize 
+
+        return ghost
+    
 Experiments = {
     # W G-shaped Wire - trouble loading frames beyond ~600, adjusted obj, should be 1000 though
     'W G-shaped Wire' : Experiment('W G-shaped Wire', 'W G-shaped Wire, 1000 pairs of images with Eiger4m', Detectors['eiger4m'], '8/6/2021', 54733, 600, False, [], [], None),
