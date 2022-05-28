@@ -1,6 +1,15 @@
 # gi.py - CHX Python Ghost Imaging Library
 # Author: Justin Goodrich - jgoodrich@bnl.gov
-# v0.1
+# v0.2
+# Updates from v0.1:
+# -> Removed GI algorithm from Experiment object.  Added as standalone function gia() which takes Experiment objects or raw bucket/idler frames.
+#    The gia() function implements various different ghost imaging algorithms.
+# -> Updated how bad frames are handled.  PReviously, indices of bad frames were stored in a list, and np.delete() was used to remove them from the bucket/idler
+#    frames when Experiment.get_data() (get_bucket(), get_idler()) was called with "bad = True".  Now when Experiment.remove_bad_frames() is called, they are removed
+#    from bucket/idler frames.  This leads to faster Experiment.get_data() (etc.) calls after bad frames are removed, at the expense that the bad frames are 
+#    permenantly removed unless you reload the entire Experiment from Tiled, a file, etc.
+# -> Added functions f_avg(), f_norm(), f_avg_norm() which average frames, normalizes, or both respectively, along with ghost_mse() to calculate MSE and
+#    obj_trans() to calculate the transmission of a sample.
 
 # This is still a work in progress!  Please report bugs or suggest improvements/new functionalities to author.
 
@@ -83,16 +92,16 @@ class Detector:
                 idler[i] = idlerroi
         else: # scan == True, so we have to access the data differently
             data = np.array(results[sid]['primary']['data'].read()['eiger4m_single_image'])
-            bucket = data[0:nframes*2:2,0]
-            idler = data[1:nframes*2:2,0]
-            #for i in range(nframes):
-            #    if self.dark == True:
-            #        print("Not yet implemented.")
-            #    elif self.dark == False:
-            #        bid = 2*i
-            #        iid = 2*i+1
-            #        bucket[i] = data[bid][0]
-            #        idler[i] = data[iid][0] 
+            #bucket = data[0:nframes*2:2,0]
+            #idler = data[1:nframes*2:2,0]
+            for i in range(nframes):
+                if self.dark == True:
+                    print("Not yet implemented.")
+                elif self.dark == False:
+                    bid = 2*i
+                    iid = 2*i+1
+                    bucket[i] = data[bid][0]
+                    idler[i] = data[iid][0] 
         currenttime = time.time()
         elapsedtime = currenttime - starttime
         print("Loading complete after %.1f sec." % elapsedtime)        
@@ -122,7 +131,7 @@ class Experiment:
         self.date = date
         self.sid = sid
         self.nframes = nframes
-        self.gframes = nframes # initially this is the number of frames, if frames are later removed for being bad this will adjust
+        self.gframes = nframes
         self.scan = scan
         if (roistart == []): # if no ROI start is defined...
             self.roistart = [0, 0] # ...start at the origin
@@ -135,7 +144,6 @@ class Experiment:
         self.beamsize = beamsize
         self.bucket = np.array([])
         self.idler = np.array([])
-        self.bad = [] # indices of bad frames
         
     def get_name(self):
         return self.name
@@ -193,7 +201,6 @@ class Experiment:
             nframes = self.get_nframes()
         else:
             self.nframes = nframes
-            self.gframes = nframes
             
         print("Loading '"+str(self.get_name())+"', "+str(nframes)+" frames into memory, standby...")    
         self.bucket, self.idler = self.detect.load_frames_from_db(self.get_sid(), nframes, self.scan, prints)
@@ -228,13 +235,9 @@ class Experiment:
         print("File saving complete.")
         
     # get_bucket method: returns bucket data
+        # frames: optional int or list of ints or False, if not False returns frames of the specified indices
         # roi: optional bool, if True returns bucket data only over ROI, otherwise returns all data
-        # bad: optional bool, if True returns bucket data with bad frames removed, otherwise returns all data
-    def get_bucket(self, frames = False, roi = True, bad = True):
-        if bad == True and not self.bad == []: # remove bad frames
-            bucket = np.delete(self.bucket, self.bad, axis=0)
-        else:
-            bucket = self.bucket
+    def get_bucket(self, frames = False, roi = True):
         if roi == True: # get the ROI from the object
             roistart = self.get_roistart()
             roisize = self.get_roisize()
@@ -242,19 +245,14 @@ class Experiment:
             roistart = [0,0]
             roisize = self.detect.get_pixels()
         if frames == False:
-            bucket = bucket[:,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
+            return self.bucket[:,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
         else:
-            bucket = bucket[frames,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
-        return bucket
+            return self.bucket[frames,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
     
     # get_idler method: returns bucket data
+        # frames: optional int or list of ints or False, if not False returns frames of the specified indices
         # roi: optional bool, if True returns idler data only over ROI, otherwise returns all data
-        # bad: optional bool, if True returns idler data with bad frames removed, otherwise returns all data
-    def get_idler(self, frames = False, roi = True, bad = True):
-        if bad == True and not self.bad == []:
-            idler = np.delete(self.idler, self.bad, axis=0)
-        else: 
-            idler = self.idler
+    def get_idler(self, frames = False, roi = True):
         if roi == True:
             roistart = self.get_roistart()
             roisize = self.get_roisize()
@@ -262,75 +260,63 @@ class Experiment:
             roistart = [0,0]
             roisize = self.detect.get_pixels()
         if frames == False:
-            idler = idler[:,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
+            return self.idler[:,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
         else:
-            idler = idler[frames,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
-        return idler
+            return self.idler[frames,roistart[0]:roistart[0]+roisize[0],roistart[1]:roistart[1]+roisize[1]]
     
     # get_data method: returns bucket and idler data
+        # frames: optional int or list of ints or False, if not False returns frames of the specified indices
         # roi: optional bool, if True returns data only over ROI, otherwise returns all data
-        # bad: optional bool, if True returns data with bad frames removed, otherwise returns all data
-    def get_data(self, frames = False, roi = True, bad = True):
-        return self.get_bucket(frames = frames, roi = roi, bad = bad), self.get_idler(frames = frames, roi = roi, bad = bad)
+    def get_data(self, frames = False, roi = True):
+        return self.get_bucket(frames = frames, roi = roi), self.get_idler(frames = frames, roi = roi)
     
     # frame_suns method: determines the sum of all pixels in each frame in idler and bucket
         # roi: optional bool, if True it calculates sum over only ROI, otherwise over the entire frame
-        # bad: optional bool, if True returns sums with bad frames removed, otherwise returns all data
         # plot: optional bool, if True plots the sums vs frames and their ratios (bucket/idler) 
-    def frame_sums(self, roi = True, bad = True, plot = True, ratio = True):
-        bucket, idler = self.get_data(roi = roi, bad = bad)
+        # ratio: optional boool, if True calculates and also returns the ratio between idler and bucket frames
+    def frame_sums(self, roi = True, plot = True, ratio = True):
+        bucket, idler = self.get_data(roi = roi)
         bsums = bucket.sum(1).sum(1)
         isums = idler.sum(1).sum(1)
         if ratio == True:
             ratio = np.divide(isums, bsums)
-        if bad == True:
-            frames = self.gframes
-        else:
-            frames = self.nframes
         if plot == True:
             fig, axs = plt.subplots(2)  
             xlim = self.gframes
             ylim1 = np.median([bsums, isums])*3
             ylim2 = np.median(ratio)*2
-            x_list = list(range(0, frames))
-            axs[0].set_xlim([0, frames])
+            x_list = list(range(0, self.gframes))
+            axs[0].set_xlim([0, self.gframes])
             axs[0].set_ylim([0, ylim1])
             axs[0].set_ylabel("Intensity")
             axs[0].plot(x_list, bsums, label="Bucket")
             axs[0].plot(x_list, isums, label="Idler")
             axs[0].legend(loc="upper right")
-            axs[1].set_xlim([0, frames])
+            axs[1].set_xlim([0, self.gframes])
             axs[1].set_ylim([0, ylim2])
             axs[1].set_xlabel("Frame")
             axs[1].set_ylabel("Idler/Bucket Ratio")
-            axs[1].plot(x_list, ratio)        
+            axs[1].plot(x_list, ratio)
         return bsums, isums, ratio
 
     
     # frames_mean method: determines the average intensity of all frames
         # roi: optional bool, if True it calculates sum over only ROI, otherwise over the entire frame
-        # bad: optional bool, if True returns mean with bad frames removed, otherwise returns all data  
-    def frames_mean(self, roi = True, bad = True):
-        sums = self.frame_sums(roi = roi, bad = bad);
+    def frames_mean(self, roi = True):
+        sums = self.frame_sums(roi = roi, plot = False, ratio = False);
         return np.mean(sums[0]), np.mean(sums[1])
     
-    # frames_mean method: generates histograms (count vs intensity) of all pixels in each frame
+    # intensity histogram: generates histograms (count vs intensity) of all pixels in each frame
         # frame: int, which frame of the bucket and idler to generate histogram data from
         # roi: optional bool, if True it generates histograms over only the ROI, otherwise over the entire frame
-        # bad: optional bool, if True returns histograms of only good frames, otherwise returns all data 
         # bins: optional int, defaults to 500; number of bins in the histograms
-    def intensity_histogram(self, frame, roi = True, bad = True, bins = 100, plot = True):
-        bucket, idler = self.get_data(frames = frame, roi = roi, bad = bad)
+    def intensity_histogram(self, frame, roi = True, bins = 100, plot = True):
+        bucket, idler = self.get_data(frames = frame, roi = roi)
         maxintensity = int(np.max([bucket, idler]))
-        print("Max intensity: "+str(maxintensity))
-        #bhist = np.array([])
-        #ihist = np.array([])
-        #for i in range(self.gframes):
-        #    np.append(bhist, np.histogram(bucket[i], bins))
-        #    np.append(ihist, np.histogram(idler[i], bins))      
+        print("Max intensity: "+str(maxintensity))    
         bhist = np.histogram(bucket, bins)
         ihist = np.histogram(idler, bins)
-        
+
         if plot == True:
             max = np.max([bhist[1], ihist[1]])
             fig, axs = plt.subplots(2)  
@@ -345,28 +331,22 @@ class Experiment:
             axs[1].set_xlabel("Intensity")
             axs[1].set_ylabel("Count")
             axs[1].plot(ihist[1][:-1], ihist[0])
-        #bhist = np.zeros([maxframes, maxintensity+1])
-        #ihist = np.zeros([maxframes, maxintensity+1])
-      
-        #for i in range(maxframes):
-        #    for j in range(bucket.shape[1]):
-        #        for k in range(bucket.shape[2]):
-        #            bint = int(bucket[i,j,k])
-        #            bhist[i][bint] += 1
-        #            iint = int(idler[i,j,k])
-        #            ihist[i][iint] += 1 
+
         return bhist, ihist      
         
     # roiarea method: determines the area (number of pixels) in the ROI
-    def roiarea(self):
-        return self.roisize[0]*self.roisize[1]
+    def roiarea(self, roi = True):
+        if roi == True:
+            return self.roisize[0]*self.roisize[1]
+        else:
+            size = self.detect.get_pixels()
+            return size[0]*size[1]
  
-    # clear_frames method: clears out the bucket, idler, resets bad frames, and resets the good frames to number of total frames
+    # clear_frames method: clears out the bucket, idler
     def clear_frames(self):
         print("Cleared frames in object.")
         self.bucket = np.array([])
         self.idler = np.array([])
-        self.bad = []
         self.gframes = self.nframes
     
     # remove_bad_frames method: searches for frames with intensity too far away from the median and returns the indices of these frames
@@ -377,8 +357,7 @@ class Experiment:
         # roi: optional bool, if True it looks for good/bad in the ROI, otherwise over the entire frame
     def remove_bad_frames(self, sums = False, scale = 2.0, ratio = False, update = True, roi = True):
         if sums == False:
-            sums = self.frame_sums(roi = roi, bad = False, plot = False)            
-            
+            sums = self.frame_sums(roi = roi, plot = False)            
         if ratio == True:
             ratio = np.divide(sums[1], sums[0])
             ymax = np.median(ratio)*scale
@@ -405,7 +384,8 @@ class Experiment:
         print("Bad frames found with indices "+str(bad))
         
         if update == True:
-            self.bad = bad
+            self.bucket = np.delete(self.bucket, bad, axis=0)
+            self.idler = np.delete(self.idler, bad, axis=0)
             self.gframes = self.nframes - len(bad)
             print("Bad frames saved in object.")
         return bad
@@ -413,52 +393,6 @@ class Experiment:
     # dgi method: applies the DGI to reconstruct the data
         # roi: optional bool, if True it looks for good/bad in the ROI, otherwise over the entire frame   
         # bad: optional bool, if True returns only does DGI over good frames, otherwise all frames    
-    def dgi(self, roi = True, bad = True):      
-        idler = self.get_idler(roi = roi, bad = bad)
-        binsize = idler.shape[0] # should be equal to gframes
-
-        ghost = np.zeros([idler.shape[1], idler.shape[2]])
-        bsums, isums, ratio = self.frame_sums(roi, bad, plot = False, ratio = False)
-        bsums = bsums
-        isums = isums/self.roiarea()
-        bsumav = np.mean(bsums)
-        isumav = np.mean(isums)
-
-        for i in range(ghost.shape[0]):
-            for j in range(ghost.shape[1]):
-                sum = 0
-
-                for bin in range(binsize):
-                    sum += (bsums[bin] - bsumav*isums[bin]/isumav)*idler[bin][i][j]
-
-                ghost[i,j]=sum/binsize 
-
-        return ghost
-    
-    # ngi method: applies the NGI to reconstruct the data
-    # roi: optional bool, if True it looks for good/bad in the ROI, otherwise over the entire frame   
-    # bad: optional bool, if True returns only does NGI over good frames, otherwise all frames    
-    def ngi(self, roi = True, bad = True):      
-        idler = self.get_idler(roi = roi, bad = bad)
-        binsize = idler.shape[0] # should be equal to gframes
-
-        ghost = np.zeros([idler.shape[1], idler.shape[2]])
-        bsums, isums, ratio = self.frame_sums(roi, bad, plot = False, ratio = False)
-        bsums = bsums
-        isums = isums/self.roiarea()
-        bsumav = np.mean(bsums)
-        isumav = np.mean(isums)
-
-        for i in range(ghost.shape[0]):
-            for j in range(ghost.shape[1]):
-                sum = 0
-
-                for bin in range(binsize):
-                    sum += (bsums[bin]/isums[bin] - bsumav/isumav)*idler[bin][i][j]
-
-                ghost[i,j]=sum/binsize 
-
-        return ghost
     
 Experiments = {
     # W G-shaped Wire - trouble loading frames beyond ~600, adjusted obj, should be 1000 though
@@ -472,3 +406,68 @@ Experiments = {
     'B Fiber 5' : Experiment('B Fiber 5', 'Mounted the fiber at a ~45 deg angle.  Feedback loop failed towards end of run (not sure which uid).  Sample_out position clips beam.', Detectors['xray_eye'], '4/7/2022', 82697, 5000, False, [], [], 200), # beam issue
     'B Fiber 6' : Experiment('B Fiber 6', 'Focused beam down, fiber still at angle.  Using eiger4m now.', Detectors['eiger4m'], '4/8/2022', 95141, 1000, False, [1185, 1090], [30, 30], 80)
 }
+
+def gia(data, algorithm = 'dgi', roi = True):
+    print(str(type(data)))
+    if str(type(data)) == "<class 'gi.Experiment'>":
+        bucket, idler = data.get_data(roi = roi)
+        print(idler.shape)
+        nframes = data.gframes
+    else: # assume we just got passed two arrays with the bucket and idler frames
+        bucket, idler = data
+        if bucket.shape[0] == idler.shape[0]:
+            nframes = bucket.shape[0]
+        else:
+            print("Warning: bucket and idler have different number of frames.")
+            return
+    ydim = idler.shape[1]
+    xdim = idler.shape[2]
+    bsums, isums = bucket.sum(1).sum(1), idler.sum(1).sum(1)
+    bmean, imean = np.mean(bsums), np.mean(isums)
+    idler = np.reshape(idler, (nframes, ydim*xdim))
+    
+    if algorithm == 'gi': # correct
+        v = np.matmul(bsums,idler)/nframes
+    elif algorithm == 'sgi': # correct
+        v = np.matmul(bsums-bmean,idler)/nframes
+    elif algorithm == 'dgi':
+        v = np.matmul(bsums-bmean*isums/imean,idler)/nframes
+        #v = np.matmul(bsums-bmean*isums/(imean*ydim*xdim),idler)/nframes
+    elif algorithm == 'ngi':
+        v = np.matmul(bsums/isums-bmean/imean,idler)/nframes
+    elif algorithm == 'lgi':
+        print("Notice: lgi algorithm is a work in progress.")
+        v = np.matmul(np.log10(bsums/bmean),idler)/nframes
+        #v = np.matmul(np.log10(bsums/(bmean*ydim*xdim)),idler)/nframes
+    elif algorithm == 'egi':
+        print("Notice: egi algorithm is a work in progress.")
+        v = np.matmul(np.power(bsums/isums,10),idler)/nframes
+    elif algorithm == 'tgi':
+        print("Notice: tgi algorithm is a work in progress.")
+        bmax = np.max(bsums)
+        bmin = np.min(bsums)
+        import math
+        v = np.matmul(np.sin((0+(bsums-bmin)/(bmax-bmin)-0.5)*math.pi),idler)/nframes
+    else:
+        print("Notice: unimplemented algorithm selected.")
+        return
+          
+    return np.reshape(v, (ydim, xdim))
+
+gi_types = ['gi', 'sgi', 'dgi', 'ngi', 'lgi', 'egi', 'tgi']
+
+def f_avg(frames):
+    return np.sum(frames, axis=0)/frames.shape[0]
+
+def f_norm(frame):
+    frame = frame-np.min(frame)
+    return frame/np.max(frame)
+
+def f_avg_norm(frames):
+    return f_norm(f_avg(frames))
+
+def ghost_mse(bucket, ghost):
+    return np.sum(np.square(bucket-ghost))/(bucket.shape[0]*bucket.shape[1])
+
+def obj_trans(bucket_avg, idler_avg):
+    return np.divide(bucket_avg, idler_avg)
